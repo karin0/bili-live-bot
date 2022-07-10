@@ -1,0 +1,25 @@
+diff --git a/src/common.js b/src/common.js
+index 1638abbb3749e5addd433590faf9018ce53ff614..307645ea1ceb4e11dbc3758d660d9af5d4abe669 100644
+--- a/src/common.js
++++ b/src/common.js
+@@ -99,7 +99,6 @@ class KeepLive extends events_1.EventEmitter {
+     }
+     connect(reconnect = true) {
+         if (reconnect) {
+-            this.connection.close();
+             this.connection = new this.Base(...this.params);
+         }
+         const connection = this.connection;
+diff --git a/src/tcp.js b/src/tcp.js
+index d72dd9b5afc8e8827662aa8a1e634f8e54ffb858..a744f05098f216a62640accb86bbd7a1731bd6e7 100644
+--- a/src/tcp.js
++++ b/src/tcp.js
+@@ -12,7 +12,7 @@ class LiveTCPBase extends common_1.Live {
+         const send = (data) => {
+             socket.write(data);
+         };
+-        const close = () => this.socket.end();
++        const close = () => this.socket.destroy();
+         super(inflates, roomid, { send, close, protover, key, authBody });
+         this.i = 0;
+         this.buffer = Buffer.alloc(0);
