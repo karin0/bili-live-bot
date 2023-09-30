@@ -13,6 +13,22 @@ import blivedm
 import blivedm.models.web as web_models
 
 
+def get_logger():
+    fmt = '%(message)s'
+    if not 'JOURNAL_STREAM' in os.environ:
+        fmt = '%(asctime)s ' + fmt
+    logger = logging.getLogger('live_bot')
+    logger.setLevel(logging.INFO)
+    h = logging.StreamHandler()
+    h.setLevel(logging.INFO)
+    h.setFormatter(logging.Formatter(fmt))
+    logger.addHandler(h)
+    return logger
+
+
+log = get_logger()
+
+
 def init_session():
     cookies = http.cookies.SimpleCookie()
     cookies['SESSDATA'] = os.environ['SESSDATA']
@@ -47,12 +63,12 @@ class Live:
 
     def _callback(self, *txts):
         txt = ' '.join(map(str, txts))
-        print(f'[{self.room_id}]', txt.replace('\n', ' '))
+        log.info('[%d] %s', self.room_id, txt.replace('\n', ' '))
         for f in self.subscribers:
             try:
                 f(self, txt)
             except Exception as e:
-                logging.exception(e)
+                log.exception(e)
 
     def subscribe(self, f):
         self.subscribers.append(f)
@@ -115,6 +131,7 @@ async def main():
         async with bot:
             for arg in args:
                 chat_id, room_id = map(int, arg.split(':', 1))
+                log.info('Room %d -> Chat %d', room_id, chat_id)
                 chat = BufferedChat(bot, chat_id)
 
                 def cb(_, s):
@@ -128,8 +145,7 @@ async def main():
             await asyncio.wait([
                 asyncio.create_task(live.join()) for live in Live.insts.values()
                 ], return_when=asyncio.FIRST_COMPLETED)
-            print('Connection aborted unexpectedly', file=sys.stderr)
-            sys.exit(-1)
+            raise RuntimeError('Connection aborted unexpectedly')
     finally:
         await SESSION.close()
 
