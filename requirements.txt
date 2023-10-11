@@ -1,1 +1,2 @@
 python-telegram-bot~=20.5
+tenacity~=8.2.3

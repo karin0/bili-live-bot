@@ -6,6 +6,7 @@ import sys
 import time
 import aiohttp
 import telegram
+import tenacity as tc
 
 sys.path.append('blivedm')
 
@@ -13,10 +14,17 @@ import blivedm
 import blivedm.models.web as web_models
 
 
-def get_logger(level=logging.DEBUG):
+def get_logger():
+    if os.environ.get('DEBUG') == '1':
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
     fmt = '%(message)s'
     if 'JOURNAL_STREAM' not in os.environ:
         fmt = '%(asctime)s ' + fmt
+    fmt = '[%(levelname)s] ' + fmt
+
     logger = logging.getLogger('live_bot')
     logger.setLevel(level)
     h = logging.StreamHandler()
@@ -91,7 +99,16 @@ class BufferedChat:
         self.chat_id = chat_id
         self.buffer = []
         self.event = asyncio.Event()
-        asyncio.create_task(self._worker())
+        self.task = asyncio.create_task(self._worker())
+
+    @tc.retry(
+        wait=tc.wait_fixed(1),
+        stop=tc.stop_after_attempt(3),
+        retry=tc.retry_if_exception_type(telegram.error.NetworkError),
+        before_sleep=tc.before_sleep_log(log, logging.WARNING),
+    )
+    async def _send(self, msg):
+        await self.bot.send_message(self.chat_id, msg)
 
     async def _flush(self):
         log.debug('@%d: flushing %d messages', self.chat_id, len(self.buffer))
@@ -99,14 +116,9 @@ class BufferedChat:
         msg = '\n'.join(self.buffer)
         self.buffer.clear()
         try:
-            await self.bot.send_message(self.chat_id, msg)
-        except telegram.error.NetworkError as e:
-            log.exception('telegram: %s', e)
-            try:
-                await asyncio.sleep(1)
-                await self.bot.send_message(self.chat_id, msg)
-            except telegram.error.NetworkError as e:
-                log.exception('telegram retry failed: %s', e)
+            await self._send(msg)
+        except tc.RetryError:
+            log.error('@%d: failed to send %s', self.chat_id, repr(msg))
 
     async def _worker(self):
         cool = time.monotonic()
@@ -129,6 +141,14 @@ class BufferedChat:
         self.event.set()
 
 
+def make_chat_callback(chat):
+    def f(live, s):
+        log.debug('#%d: live callback: %s', live.room_id, repr(s))
+        chat.send(s)
+
+    return f
+
+
 async def main():
     args = sys.argv[1:]
     if not args:
@@ -140,24 +160,21 @@ async def main():
     try:
         bot = telegram.Bot(os.environ['BOT_TOKEN'])
         async with bot:
+            tasks = []
             for arg in args:
                 chat_id, room_id = map(int, arg.split(':', 1))
                 log.info('Room %d -> Chat %d', room_id, chat_id)
                 chat = BufferedChat(bot, chat_id)
                 live = Live.get(room_id)
-                
-                def f(live, s, c=chat):
-                    log.info('#%d: live callback: %s', live.room_id, repr(s))
-                    c.send(s)
-
-                live.subscribe(f)
+                live.subscribe(make_chat_callback(chat))
                 live.start()
                 await bot.send_message(chat_id, f'Up: {room_id}')
+                tasks.append(chat.task)
 
-            log.debug('joining %d lives', len(Live.insts))
-            await asyncio.wait([
+            tasks += [
                 asyncio.create_task(live.join()) for live in Live.insts.values()
-                ], return_when=asyncio.FIRST_COMPLETED)
+            ]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             raise RuntimeError('Connection aborted unexpectedly')
     finally:
         await SESSION.close()
