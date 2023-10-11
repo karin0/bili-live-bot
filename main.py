@@ -20,10 +20,10 @@ def get_logger():
     else:
         level = logging.INFO
 
-    fmt = '%(message)s'
-    if 'JOURNAL_STREAM' not in os.environ:
-        fmt = '%(asctime)s ' + fmt
-    fmt = '[%(levelname)s] ' + fmt
+    if 'JOURNAL_STREAM' in os.environ:
+        fmt = '[%(levelname)s] %(message)s'
+    else:
+        fmt = '%(asctime)s [%(levelname)s] %(message)s'
 
     logger = logging.getLogger('live_bot')
     logger.setLevel(level)
@@ -174,6 +174,7 @@ async def main():
             tasks += [
                 asyncio.create_task(live.join()) for live in Live.insts.values()
             ]
+            log.debug('waiting for %d tasks', len(tasks))
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             raise RuntimeError('Connection aborted unexpectedly')
     finally:
