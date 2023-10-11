@@ -168,7 +168,7 @@ async def main():
                 live = Live.get(room_id)
                 live.subscribe(make_chat_callback(chat))
                 live.start()
-                await bot.send_message(chat_id, f'Up: {room_id}')
+                chat.send(f'Up: {room_id}')
                 tasks.append(chat.task)
 
             tasks += [
