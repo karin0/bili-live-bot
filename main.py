@@ -13,14 +13,14 @@ import blivedm
 import blivedm.models.web as web_models
 
 
-def get_logger():
+def get_logger(level=logging.DEBUG):
     fmt = '%(message)s'
-    if not 'JOURNAL_STREAM' in os.environ:
+    if 'JOURNAL_STREAM' not in os.environ:
         fmt = '%(asctime)s ' + fmt
     logger = logging.getLogger('live_bot')
-    logger.setLevel(logging.INFO)
+    logger.setLevel(level)
     h = logging.StreamHandler()
-    h.setLevel(logging.INFO)
+    h.setLevel(level)
     h.setFormatter(logging.Formatter(fmt))
     logger.addHandler(h)
     return logger
@@ -57,9 +57,9 @@ class Live:
         self.room_id = room_id
         self.subscribers = []
         self.started = False
-        self.handler = LiveHandler(self._callback)
+        handler = LiveHandler(self._callback)
         self.client = blivedm.BLiveClient(room_id, session=SESSION)
-        self.client.set_handler(self.handler)
+        self.client.set_handler(handler)
 
     def _callback(self, *txts):
         txt = ' '.join(map(str, txts))
@@ -68,7 +68,7 @@ class Live:
             try:
                 f(self, txt)
             except Exception as e:
-                log.exception(e)
+                log.exception('live callback: %s', e)
 
     def subscribe(self, f):
         self.subscribers.append(f)
@@ -94,16 +94,26 @@ class BufferedChat:
         asyncio.create_task(self._worker())
 
     async def _flush(self):
+        log.debug('@%d: flushing %d messages', self.chat_id, len(self.buffer))
         assert self.buffer
-        todo = self.buffer
-        self.buffer = []
-        await self.bot.send_message(self.chat_id, '\n'.join(todo))
+        msg = '\n'.join(self.buffer)
+        self.buffer.clear()
+        try:
+            await self.bot.send_message(self.chat_id, msg)
+        except telegram.error.NetworkError as e:
+            log.exception('telegram: %s', e)
+            try:
+                await asyncio.sleep(1)
+                await self.bot.send_message(self.chat_id, msg)
+            except telegram.error.NetworkError as e:
+                log.exception('telegram retry failed: %s', e)
 
     async def _worker(self):
         cool = time.monotonic()
         while True:
             await self.event.wait()
             dt = cool - time.monotonic()
+            log.debug('@%d: woke at %s - %s', self.chat_id, cool, dt)
             if dt > 0:
                 await asyncio.sleep(dt)
             await self._flush()
@@ -114,6 +124,7 @@ class BufferedChat:
             self.event.clear()
 
     def send(self, text):
+        log.debug('@%d: sending %s', self.chat_id, repr(text))
         self.buffer.append(text)
         self.event.set()
 
@@ -133,15 +144,17 @@ async def main():
                 chat_id, room_id = map(int, arg.split(':', 1))
                 log.info('Room %d -> Chat %d', room_id, chat_id)
                 chat = BufferedChat(bot, chat_id)
-
-                def cb(_, s):
-                    chat.send(s)
-
                 live = Live.get(room_id)
-                live.subscribe(cb)
+                
+                def f(live, s, c=chat):
+                    log.info('#%d: live callback: %s', live.room_id, repr(s))
+                    c.send(s)
+
+                live.subscribe(f)
                 live.start()
                 await bot.send_message(chat_id, f'Up: {room_id}')
 
+            log.debug('joining %d lives', len(Live.insts))
             await asyncio.wait([
                 asyncio.create_task(live.join()) for live in Live.insts.values()
                 ], return_when=asyncio.FIRST_COMPLETED)
